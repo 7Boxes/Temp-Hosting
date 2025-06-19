@@ -31,8 +31,7 @@ def load_pet_data():
             end = content.rfind("}") + 1
             lua_table = content[start:end]
             
-            # Convert Lua table to Python dict (simplified approach)
-            # Note: This is a basic parser that works with this specific format
+            # Convert Lua table to Python dict
             pets = {}
             pet_entries = [e.strip() for e in lua_table.split("\n") if "=" in e]
             
@@ -479,4 +478,4 @@ async def on_ready():
 
 # Run bot
 if __name__ == "__main__":
-    bot.run("YOUR_BOT_TOKEN_HERE")  # Replace with your bot token
+    bot.run("MTM4NTA1NDE2OTkwMzE0MDk3NA.G5uhqt.yetf545NBnu1zFzIhAB28UHMBpPhBzSyZfHAps")  # Replace with your bot token
