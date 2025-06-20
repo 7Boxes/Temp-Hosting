@@ -1,0 +1,566 @@
+import discord
+from discord.ext import commands
+from discord import app_commands
+import json
+import os
+import difflib
+import random
+import re
+from typing import Literal, Optional, Dict, List
+
+# Initialize bot
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+# Configuration
+CONFIG_FILE = "bot_config.json"
+USER_SETTINGS_FILE = "user_settings.json"
+DEFAULT_CONFIG = {
+    "report_channel": None,
+    "control_panel_channel": None,
+    "embed_color": 0x3498db,
+    "admin_roles": []
+}
+
+# Load pet data
+def load_pet_data():
+    try:
+        with open("/storage/emulated/0/Download/Place_85896571713843_Script_1750291259.txt", "r", encoding="utf-8") as f:
+            content = f.read()
+            # Extract the Lua table part
+            start = content.find("{")
+            end = content.rfind("}") + 1
+            lua_table = content[start:end]
+            
+            # Convert Lua table to Python dict
+            pets = {}
+            pet_entries = [e.strip() for e in lua_table.split("\n") if "=" in e]
+            
+            for entry in pet_entries:
+                if not entry.strip():
+                    continue
+                    
+                # Split name and data
+                name_part, data_part = entry.split("=", 1)
+                name = name_part.strip().strip('"').strip("'").strip("[").strip("]").strip()
+                
+                # Parse the PetBuilder chain
+                pet_data = {
+                    "name": name,
+                    "rarity": "Common",
+                    "stats": {},
+                    "images": [],
+                    "limited": False,
+                    "tags": []
+                }
+                
+                # Process each method call
+                methods = [m.strip() for m in data_part.split(":") if m.strip()]
+                for method in methods[1:]:  # Skip the initial new()
+                    if "(" in method:
+                        method_name = method.split("(")[0]
+                        args_part = method.split("(")[1].split(")")[0]
+                        args = [a.strip().strip('"').strip("'") for a in args_part.split(",") if a.strip()]
+                        
+                        if method_name == "Rarity":
+                            pet_data["rarity"] = args[0]
+                        elif method_name == "Stat":
+                            stat_name = args[0]
+                            stat_value = float(args[1]) if "." in args[1] else int(args[1])
+                            pet_data["stats"][stat_name] = stat_value
+                        elif method_name == "Image":
+                            pet_data["images"] = args
+                        elif method_name == "Limited":
+                            pet_data["limited"] = True
+                        elif method_name == "Tag":
+                            pet_data["tags"].extend([tag.strip('"').strip("'") for tag in args])
+                        elif method_name == "HideInTerminal":
+                            pet_data["hide_in_terminal"] = True
+                
+                pets[name] = pet_data
+                
+            return pets
+    except Exception as e:
+        print(f"Error loading pet data: {e}")
+        return {}
+
+# Load config
+def load_config():
+    try:
+        if os.path.exists(CONFIG_FILE):
+            with open(CONFIG_FILE, "r") as f:
+                return json.load(f)
+    except:
+        pass
+    return DEFAULT_CONFIG.copy()
+
+# Save config
+def save_config(config):
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(config, f, indent=2)
+
+# Load user settings
+def load_user_settings():
+    try:
+        if os.path.exists(USER_SETTINGS_FILE):
+            with open(USER_SETTINGS_FILE, "r") as f:
+                return json.load(f)
+    except:
+        pass
+    return {}
+
+# Save user settings
+def save_user_settings(settings):
+    with open(USER_SETTINGS_FILE, "w") as f:
+        json.dump(settings, f, indent=2)
+
+# Global variables
+pet_data = load_pet_data()
+config = load_config()
+user_settings = load_user_settings()
+
+# Helper functions
+def get_embed(title="", description="", color=None, user_id=None):
+    if color is None:
+        color = config.get("embed_color", 0x3498db)
+    embed = discord.Embed(title=title, description=description, color=color)
+    
+    # Apply user blacklist if exists
+    if user_id:
+        user_blacklist = user_settings.get(str(user_id), {}).get("blacklist", [])
+        for field in ["title", "description", "footer"]:
+            if field in user_blacklist:
+                if field == "title":
+                    embed.title = ""
+                elif field == "description":
+                    embed.description = ""
+                elif field == "footer":
+                    embed.remove_footer()
+    
+    if random.random() < 0.01:  # 1% chance
+        embed.set_footer(text="made by jajtxs_")
+    return embed
+
+def is_admin(interaction: discord.Interaction):
+    if interaction.user.guild_permissions.administrator:
+        return True
+    admin_roles = config.get("admin_roles", [])
+    return any(role.id in admin_roles for role in interaction.user.roles)
+
+def fuzzy_search(query, choices, cutoff=0.6):
+    results = []
+    for choice in choices:
+        ratio = difflib.SequenceMatcher(None, query.lower(), choice.lower()).ratio()
+        if ratio >= cutoff:
+            results.append((choice, ratio))
+    results.sort(key=lambda x: x[1], reverse=True)
+    return [r[0] for r in results]
+
+def get_pet_variants(pet_name):
+    pet = pet_data.get(pet_name)
+    if not pet or not pet.get("images"):
+        return None
+    
+    images = pet["images"]
+    variants = {
+        "Normal": {
+            "image": f"https://ps99.biggamesapi.io/image/{images[0].replace('rbxassetid://', '')}" if len(images) >= 1 else None,
+            "stats": pet["stats"]
+        },
+        "Shiny": {
+            "image": f"https://ps99.biggamesapi.io/image/{images[1].replace('rbxassetid://', '')}" if len(images) >= 2 else None,
+            "stats": {k: round(v * 1.5) for k, v in pet["stats"].items()}
+        },
+        "Mythic": {
+            "image": f"https://ps99.biggamesapi.io/image/{images[2].replace('rbxassetid://', '')}" if len(images) >= 3 else None,
+            "stats": {k: round(v * 1.75) for k, v in pet["stats"].items()}
+        },
+        "Shiny Mythic": {
+            "image": f"https://ps99.biggamesapi.io/image/{images[3].replace('rbxassetid://', '')}" if len(images) >= 4 else None,
+            "stats": {k: round(v * 2.25) for k, v in pet["stats"].items()}
+        }
+    }
+    
+    return variants
+
+# Control Panel View
+class ControlPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @discord.ui.button(label="Top Pets", style=discord.ButtonStyle.primary, custom_id="control_top")
+    async def top_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+            return
+        
+        await interaction.response.send_modal(TopModal())
+    
+    @discord.ui.button(label="Search Pets", style=discord.ButtonStyle.primary, custom_id="control_search")
+    async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+            return
+        
+        await interaction.response.send_modal(SearchModal())
+    
+    @discord.ui.button(label="View Pet", style=discord.ButtonStyle.primary, custom_id="control_view")
+    async def view_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+            return
+        
+        await interaction.response.send_modal(ViewModal())
+    
+    @discord.ui.button(label="Report Issue", style=discord.ButtonStyle.danger, custom_id="control_report")
+    async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not is_admin(interaction):
+            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
+            return
+        
+        await interaction.response.send_modal(ReportModal())
+
+# Modals for control panel
+class TopModal(discord.ui.Modal, title="Top Pets"):
+    stat = discord.ui.TextInput(
+        label="Stat to sort by",
+        placeholder="Bubbles, Coins, Gems, or Tickets"
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await top_command(interaction, self.stat.value)
+
+class SearchModal(discord.ui.Modal, title="Search Pets"):
+    attribute = discord.ui.TextInput(
+        label="Attribute to search by",
+        placeholder="rarity, stats, tag, or limited"
+    )
+    query = discord.ui.TextInput(
+        label="Value to search for"
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await search_command(interaction, self.attribute.value, self.query.value)
+
+class ViewModal(discord.ui.Modal, title="View Pet"):
+    pet_name = discord.ui.TextInput(
+        label="Pet Name"
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await view_command(interaction, self.pet_name.value)
+
+class ReportModal(discord.ui.Modal, title="Report Issue"):
+    pet_name = discord.ui.TextInput(
+        label="Pet Name"
+    )
+    issue = discord.ui.TextInput(
+        label="Description of the issue",
+        style=discord.TextStyle.long
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        await report_command(interaction, self.pet_name.value, self.issue.value)
+
+# Command functions (now called by modals)
+async def top_command(interaction: discord.Interaction, stat: str):
+    stat = stat.capitalize()
+    if stat not in ["Bubbles", "Coins", "Gems", "Tickets"]:
+        await interaction.response.send_message("Invalid stat. Use Bubbles, Coins, Gems, or Tickets.", ephemeral=True)
+        return
+    
+    valid_pets = [pet for pet in pet_data.values() if stat in pet["stats"]]
+    
+    if not valid_pets:
+        await interaction.response.send_message(f"No pets found with {stat} stat.", ephemeral=True)
+        return
+    
+    sorted_pets = sorted(valid_pets, key=lambda x: x["stats"][stat], reverse=True)
+    
+    pages = []
+    for i in range(0, len(sorted_pets), 10):
+        page_pets = sorted_pets[i:i+10]
+        description = "\n".join(
+            f"**{idx + i + 1}.** {pet['name']} - {pet['stats'][stat]:,} {stat} ({pet['rarity']})"
+            for idx, pet in enumerate(page_pets)
+        )
+        pages.append(get_embed(f"Top Pets by {stat}", description, user_id=interaction.user.id))
+    
+    if not pages:
+        await interaction.response.send_message("No pets found.", ephemeral=True)
+        return
+    
+    await interaction.response.send_message(embed=pages[0], view=PaginatorView(pages))
+
+async def search_command(interaction: discord.Interaction, attribute: str, query: str):
+    results = []
+    
+    for pet in pet_data.values():
+        if attribute == "rarity":
+            if query.lower() == pet["rarity"].lower():
+                results.append(pet)
+        elif attribute == "stats":
+            if query in pet["stats"]:
+                results.append(pet)
+        elif attribute == "tag":
+            if any(query.lower() == tag.lower() for tag in pet.get("tags", [])):
+                results.append(pet)
+        elif attribute == "limited":
+            if pet["limited"]:
+                results.append(pet)
+    
+    if not results:
+        await interaction.response.send_message("No pets matched your search.", ephemeral=True)
+        return
+    
+    pages = []
+    for i in range(0, len(results), 10):
+        page_pets = results[i:i+10]
+        description = "\n".join(
+            f"**{pet['name']}** ({pet['rarity']})" + 
+            (f" - Tags: {', '.join(pet['tags'])}" if pet.get('tags') else "") +
+            (f" - Limited" if pet['limited'] else "")
+            for pet in page_pets
+        )
+        pages.append(get_embed(f"Pets with {attribute} matching '{query}'", description, user_id=interaction.user.id))
+    
+    await interaction.response.send_message(embed=pages[0], view=PaginatorView(pages))
+
+async def view_command(interaction: discord.Interaction, pet_name: str):
+    pet = pet_data.get(pet_name)
+    if not pet:
+        matches = fuzzy_search(pet_name, list(pet_data.keys()))
+        if matches:
+            pet = pet_data[matches[0]]
+            pet_name = matches[0]
+    
+    if not pet:
+        await interaction.response.send_message(f"Pet '{pet_name}' not found.", ephemeral=True)
+        return
+    
+    variants = get_pet_variants(pet_name)
+    if not variants:
+        await interaction.response.send_message(f"No variants found for {pet_name}.", ephemeral=True)
+        return
+    
+    # Send each variant
+    for variant_name, variant_data in variants.items():
+        if variant_data["image"]:
+            stats_desc = "\n".join(f"{stat}: {value:,}" for stat, value in variant_data["stats"].items())
+            embed = get_embed(
+                f"{pet_name} ({pet['rarity']}) - {variant_name}",
+                f"**Stats:**\n{stats_desc}\n\n" +
+                (f"**Tags:** {', '.join(pet['tags'])}\n" if pet.get('tags') else "") +
+                ("**Limited**" if pet['limited'] else ""),
+                user_id=interaction.user.id
+            )
+            embed.set_thumbnail(url=variant_data["image"])
+            
+            if variant_name == "Normal":
+                await interaction.response.send_message(embed=embed)
+            else:
+                await interaction.followup.send(embed=embed)
+
+async def report_command(interaction: discord.Interaction, pet_name: str, issue: str):
+    report_channel_id = config.get("report_channel")
+    if not report_channel_id:
+        await interaction.response.send_message("Report channel not set up. Ask an admin to run /setup.", ephemeral=True)
+        return
+    
+    report_channel = bot.get_channel(report_channel_id)
+    if not report_channel:
+        await interaction.response.send_message("Report channel not found. Ask an admin to reconfigure.", ephemeral=True)
+        return
+    
+    embed = get_embed(
+        "Data Issue Report",
+        f"**Pet:** {pet_name}\n"
+        f"**Reported by:** {interaction.user.mention}\n"
+        f"**Issue:** {issue}\n\n"
+        "Please reply with a screenshot of the correct data.",
+        user_id=interaction.user.id
+    )
+    
+    await report_channel.send(embed=embed)
+    await interaction.response.send_message("Your report has been sent to the moderators.", ephemeral=True)
+
+# Settings command
+@bot.tree.command(name="settings", description="Configure your display settings")
+@app_commands.describe(
+    blacklist="Attributes to hide (comma separated: title,description,footer)"
+)
+async def settings(interaction: discord.Interaction, blacklist: Optional[str] = None):
+    user_id = str(interaction.user.id)
+    
+    if user_id not in user_settings:
+        user_settings[user_id] = {"blacklist": []}
+    
+    if blacklist is not None:
+        blacklist_items = [item.strip() for item in blacklist.split(",")]
+        valid_items = ["title", "description", "footer"]
+        user_settings[user_id]["blacklist"] = [item for item in blacklist_items if item in valid_items]
+        save_user_settings(user_settings)
+        await interaction.response.send_message(
+            f"Your settings have been updated. Blacklisted: {', '.join(user_settings[user_id]['blacklist']) or 'None'}",
+            ephemeral=True
+        )
+    else:
+        current = ", ".join(user_settings[user_id].get("blacklist", [])) or "None"
+        await interaction.response.send_message(
+            f"Your current blacklist: {current}\n"
+            "Use `/settings blacklist:title,description,footer` to change",
+            ephemeral=True
+        )
+
+# Admin commands
+@bot.tree.command(name="setup", description="Set up the server (Admin only)")
+async def setup(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("You need admin permissions to run this command.", ephemeral=True)
+        return
+    
+    guild = interaction.guild
+    category = await guild.create_category("Pet Stats Bot")
+    
+    # Create report channel
+    report_channel = await guild.create_text_channel(
+        "bot-reports",
+        category=category,
+        topic="Channel for reporting incorrect pet data"
+    )
+    
+    # Create control panel channel
+    control_panel = await guild.create_text_channel(
+        "bot-controls",
+        category=category,
+        topic="Control panel for pet stats bot"
+    )
+    
+    # Update config
+    config["report_channel"] = report_channel.id
+    config["control_panel_channel"] = control_panel.id
+    save_config(config)
+    
+    # Send control panel
+    embed = get_embed(
+        "Pet Stats Control Panel",
+        "Use the buttons below to interact with the bot."
+    )
+    await control_panel.send(embed=embed, view=ControlPanelView())
+    
+    await interaction.response.send_message(
+        f"Setup complete. Reports will go to {report_channel.mention} and controls are in {control_panel.mention}",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="refresh", description="Reload pet data (Admin only)")
+async def refresh(interaction: discord.Interaction):
+    if not is_admin(interaction):
+        await interaction.response.send_message("You need admin permissions to run this command.", ephemeral=True)
+        return
+    
+    global pet_data
+    pet_data = load_pet_data()
+    await interaction.response.send_message(f"Reloaded data for {len(pet_data)} pets.", ephemeral=True)
+
+@bot.tree.command(name="customize", description="Customize bot settings (Admin only)")
+@app_commands.describe(
+    embed_color="Hex color for embeds (e.g., #3498db)",
+    admin_role="Role to give bot admin permissions"
+)
+async def customize(
+    interaction: discord.Interaction,
+    embed_color: Optional[str] = None,
+    admin_role: Optional[discord.Role] = None
+):
+    if not is_admin(interaction):
+        await interaction.response.send_message("You need admin permissions to run this command.", ephemeral=True)
+        return
+    
+    changes = []
+    
+    if embed_color:
+        try:
+            if embed_color.startswith("#"):
+                embed_color = embed_color[1:]
+            color = int(embed_color, 16)
+            config["embed_color"] = color
+            changes.append(f"Embed color set to #{hex(color)[2:].zfill(6)}")
+        except ValueError:
+            await interaction.response.send_message("Invalid color format. Use hex like #3498db.", ephemeral=True)
+            return
+    
+    if admin_role:
+        if "admin_roles" not in config:
+            config["admin_roles"] = []
+        if admin_role.id not in config["admin_roles"]:
+            config["admin_roles"].append(admin_role.id)
+            changes.append(f"Added {admin_role.mention} as admin role")
+    
+    if changes:
+        save_config(config)
+        await interaction.response.send_message("\n".join(changes), ephemeral=True)
+    else:
+        await interaction.response.send_message("No settings were updated.", ephemeral=True)
+
+# Paginator View
+class PaginatorView(discord.ui.View):
+    def __init__(self, pages):
+        super().__init__(timeout=180)
+        self.pages = pages
+        self.current_page = 0
+        self.max_page = len(pages) - 1
+        self.update_buttons()
+    
+    def update_buttons(self):
+        self.first_page.disabled = self.current_page == 0
+        self.prev_page.disabled = self.current_page == 0
+        self.next_page.disabled = self.current_page == self.max_page
+        self.last_page.disabled = self.current_page == self.max_page
+        self.page_num.label = f"Page {self.current_page + 1}/{len(self.pages)}"
+    
+    @discord.ui.button(label="<<", style=discord.ButtonStyle.grey)
+    async def first_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = 0
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+    
+    @discord.ui.button(label="<", style=discord.ButtonStyle.grey)
+    async def prev_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = max(0, self.current_page - 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+    
+    @discord.ui.button(label="Page 1/1", style=discord.ButtonStyle.grey, disabled=True)
+    async def page_num(self, interaction: discord.Interaction, button: discord.ui.Button):
+        pass
+    
+    @discord.ui.button(label=">", style=discord.ButtonStyle.grey)
+    async def next_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = min(self.max_page, self.current_page + 1)
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+    
+    @discord.ui.button(label=">>", style=discord.ButtonStyle.grey)
+    async def last_page(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_page = self.max_page
+        self.update_buttons()
+        await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+# Bot events
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user.name} ({bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands")
+        
+        # Add the control panel view to the bot
+        bot.add_view(ControlPanelView())
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
+
+# Run bot
+if __name__ == "__main__":
+    bot.run("YOUR_BOT_TOKEN_HERE")  # Replace with your bot token
