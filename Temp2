@@ -628,7 +628,7 @@ async def view_command(interaction: discord.Interaction, pet_name: str, user_id:
         if variant_data["image"]:
             stats_desc = "\n".join(f"{stat}: {value:,}" for stat, value in variant_data["stats"].items())
             
-            # Build description safely - FIXED THE MISSING COMMA HERE
+            # Build description
             description_lines = [
                 f"**Rarity:** {pet['rarity']}",
                 f"**Type:** {variant_name}",
@@ -1024,6 +1024,26 @@ class PaginatorView(discord.ui.View):
         self.current_page = self.max_page
         self.update_buttons()
         await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
+
+# Slash commands
+@bot.tree.command(name="setup", description="Setup bot channels (Admin only)")
+async def setup_slash(interaction: discord.Interaction):
+    await setup_command(interaction)
+
+@bot.tree.command(name="petstats", description="Open the pet stats interface")
+async def petstats(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        embed=get_embed(
+            f"{EMOJIS['pet']} Pet Stats",
+            "Use the dropdown below to access all commands"
+        ),
+        view=CommandView(),
+        ephemeral=True
+    )
+
+@bot.tree.command(name="refresh", description="Refresh pet data (Admin only)")
+async def refresh_slash(interaction: discord.Interaction):
+    await refresh_command(interaction)
 
 # Run bot
 if __name__ == "__main__":
