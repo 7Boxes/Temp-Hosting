@@ -627,16 +627,27 @@ async def view_command(interaction: discord.Interaction, pet_name: str, user_id:
     for variant_name, variant_data in variants.items():
         if variant_data["image"]:
             stats_desc = "\n".join(f"{stat}: {value:,}" for stat, value in variant_data["stats"].items())
-            embed = get_embed(
+            
+            # Build description safely - FIXED THE MISSING COMMA HERE
+            description_lines = [
+                f"**Rarity:** {pet['rarity']}",
+                f"**Type:** {variant_name}",
+                "",
+                f"**Stats:**",
+                stats_desc,
+                ""
+            ]
+            if pet.get('tags'):
+                description_lines.append(f"**Tags:** {', '.join(pet['tags'])}")
+            description_lines.append(f"**Limited:** {'Yes' if pet['limited'] else 'No'}")
+            description = "\n".join(description_lines)
+            
+            emb = get_embed(
                 f"{EMOJIS['view']} {pet_name} - {variant_name}",
-                f"**Rarity:** {pet['rarity']}\n"
-                f"**Type:** {variant_name}\n\n"
-                f"**Stats:**\n{stats_desc}\n\n"
-                (f"**Tags:** {', '.join(pet['tags'])}\n" if pet.get('tags') else "") +
-                (f"**Limited:** {'Yes' if pet['limited'] else 'No'}")
+                description
             )
-            embed.set_thumbnail(url=variant_data["image"])
-            await channel.send(embed=embed)
+            emb.set_thumbnail(url=variant_data["image"])
+            await channel.send(embed=emb)
     
     await interaction.followup.send(
         embed=get_embed(
