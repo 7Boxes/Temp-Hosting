@@ -6,7 +6,7 @@ import os
 import difflib
 import random
 import re
-from typing import Literal, Optional, Dict, List
+from typing import Literal, Optional, Dict, List, Set
 
 # Initialize bot
 intents = discord.Intents.default()
@@ -17,10 +17,39 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 CONFIG_FILE = "bot_config.json"
 USER_SETTINGS_FILE = "user_settings.json"
 DEFAULT_CONFIG = {
-    "report_channel": None,
-    "control_panel_channel": None,
+    "channels": {
+        "top": None,
+        "fuzzy": None,
+        "search": None,
+        "view": None,
+        "report": None,
+        "settings": None
+    },
     "embed_color": 0x3498db,
     "admin_roles": []
+}
+
+# Emojis for better UX
+EMOJIS = {
+    "top": "📈",
+    "fuzzy": "🔍",
+    "search": "🔎",
+    "view": "👁️",
+    "report": "⚠️",
+    "settings": "⚙️",
+    "rarity": "✨",
+    "pet": "🐾",
+    "stat": "📊",
+    "tag": "🏷️",
+    "admin": "🛡️",
+    "refresh": "🔄",
+    "success": "✅",
+    "error": "❌",
+    "info": "ℹ️",
+    "bubbles": "💭",
+    "coins": "🪙",
+    "gems": "💎",
+    "tickets": "🎫"
 }
 
 # Load pet data
@@ -128,9 +157,9 @@ def get_embed(title="", description="", color=None, user_id=None):
     
     # Apply user blacklist if exists
     if user_id:
-        user_blacklist = user_settings.get(str(user_id), {}).get("blacklist", [])
+        settings = user_settings.get(str(user_id), {})
         for field in ["title", "description", "footer"]:
-            if field in user_blacklist:
+            if field in settings.get("blacklist", []):
                 if field == "title":
                     embed.title = ""
                 elif field == "description":
@@ -184,100 +213,277 @@ def get_pet_variants(pet_name):
     
     return variants
 
-# Control Panel View
-class ControlPanelView(discord.ui.View):
+def get_channel_id(command_name):
+    return config.get("channels", {}).get(command_name)
+
+def get_sorted_pet_names():
+    return sorted(pet_data.keys())
+
+def get_unique_rarities():
+    return sorted(set(pet["rarity"] for pet in pet_data.values()))
+
+def get_unique_tags():
+    tags = set()
+    for pet in pet_data.values():
+        for tag in pet.get("tags", []):
+            tags.add(tag)
+    return sorted(tags)
+
+def get_unique_stats():
+    stats = set()
+    for pet in pet_data.values():
+        for stat in pet.get("stats", {}).keys():
+            stats.add(stat)
+    return sorted(stats)
+
+# Dropdown for pet selection
+class PetSelect(discord.ui.Select):
+    def __init__(self, placeholder, min_values=1, max_values=1, custom_id="pet_select"):
+        pet_names = get_sorted_pet_names()
+        options = [
+            discord.SelectOption(label=name, emoji=EMOJIS["pet"], description=f"Select {name}")
+            for name in pet_names
+        ]
+        super().__init__(
+            placeholder=placeholder,
+            min_values=min_values,
+            max_values=max_values,
+            options=options,
+            custom_id=custom_id
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+# Dropdown for rarity selection
+class RaritySelect(discord.ui.Select):
+    def __init__(self, placeholder, min_values=1, max_values=1, custom_id="rarity_select"):
+        rarities = get_unique_rarities()
+        options = [
+            discord.SelectOption(label=rarity, emoji=EMOJIS["rarity"], description=f"Select {rarity}")
+            for rarity in rarities
+        ]
+        super().__init__(
+            placeholder=placeholder,
+            min_values=min_values,
+            max_values=max_values,
+            options=options,
+            custom_id=custom_id
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+# Dropdown for stat selection
+class StatSelect(discord.ui.Select):
+    def __init__(self, placeholder, min_values=1, max_values=1, custom_id="stat_select"):
+        stats = get_unique_stats()
+        options = [
+            discord.SelectOption(label=stat, emoji=EMOJIS["stat"], description=f"Select {stat}")
+            for stat in stats
+        ]
+        super().__init__(
+            placeholder=placeholder,
+            min_values=min_values,
+            max_values=max_values,
+            options=options,
+            custom_id=custom_id
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+# Dropdown for tag selection
+class TagSelect(discord.ui.Select):
+    def __init__(self, placeholder, min_values=1, max_values=1, custom_id="tag_select"):
+        tags = get_unique_tags()
+        options = [
+            discord.SelectOption(label=tag, emoji=EMOJIS["tag"], description=f"Select {tag}")
+            for tag in tags
+        ]
+        super().__init__(
+            placeholder=placeholder,
+            min_values=min_values,
+            max_values=max_values,
+            options=options,
+            custom_id=custom_id
+        )
+    
+    async def callback(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+# Main command view with dropdown
+class CommandView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
+        self.add_item(CommandSelect())
     
-    @discord.ui.button(label="Top Pets", style=discord.ButtonStyle.primary, custom_id="control_top")
-    async def top_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
-            return
+class CommandSelect(discord.ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label="Top Pets", emoji=EMOJIS["top"], description="Show top pets by stat"),
+            discord.SelectOption(label="Fuzzy Search", emoji=EMOJIS["fuzzy"], description="Search pets by name"),
+            discord.SelectOption(label="Search Pets", emoji=EMOJIS["search"], description="Search by attributes"),
+            discord.SelectOption(label="View Pet", emoji=EMOJIS["view"], description="View pet details"),
+            discord.SelectOption(label="Report Issue", emoji=EMOJIS["report"], description="Report incorrect data"),
+            discord.SelectOption(label="Settings", emoji=EMOJIS["settings"], description="Configure your settings"),
+            discord.SelectOption(label="Admin Tools", emoji=EMOJIS["admin"], description="Administrator commands")
+        ]
+        super().__init__(placeholder="Select a command...", options=options, custom_id="command_select")
+    
+    async def callback(self, interaction: discord.Interaction):
+        command = self.values[0]
         
-        await interaction.response.send_modal(TopModal())
-    
-    @discord.ui.button(label="Search Pets", style=discord.ButtonStyle.primary, custom_id="control_search")
-    async def search_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
-            return
+        if command == "Top Pets":
+            view = discord.ui.View()
+            view.add_item(StatSelect(placeholder="Select a stat..."))
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['top']} Top Pets",
+                    "Please select a stat to sort by:"
+                ),
+                view=view,
+                ephemeral=True
+            )
         
-        await interaction.response.send_modal(SearchModal())
-    
-    @discord.ui.button(label="View Pet", style=discord.ButtonStyle.primary, custom_id="control_view")
-    async def view_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
-            return
+        elif command == "Fuzzy Search":
+            view = discord.ui.View()
+            view.add_item(PetSelect(placeholder="Select a pet...", max_values=10))
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['fuzzy']} Fuzzy Search",
+                    "Select up to 10 pets to search:"
+                ),
+                view=view,
+                ephemeral=True
+            )
         
-        await interaction.response.send_modal(ViewModal())
-    
-    @discord.ui.button(label="Report Issue", style=discord.ButtonStyle.danger, custom_id="control_report")
-    async def report_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        if not is_admin(interaction):
-            await interaction.response.send_message("You don't have permission to use this.", ephemeral=True)
-            return
+        elif command == "Search Pets":
+            view = discord.ui.View()
+            view.add_item(discord.ui.Select(
+                placeholder="Select attribute...",
+                options=[
+                    discord.SelectOption(label="Rarity", emoji=EMOJIS["rarity"], value="rarity"),
+                    discord.SelectOption(label="Tag", emoji=EMOJIS["tag"], value="tag"),
+                    discord.SelectOption(label="Limited", emoji=EMOJIS["admin"], value="limited")
+                ]
+            ))
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['search']} Search Pets",
+                    "Select an attribute to search by:"
+                ),
+                view=view,
+                ephemeral=True
+            )
         
-        await interaction.response.send_modal(ReportModal())
+        elif command == "View Pet":
+            view = discord.ui.View()
+            view.add_item(PetSelect(placeholder="Select a pet..."))
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['view']} View Pet",
+                    "Select a pet to view:"
+                ),
+                view=view,
+                ephemeral=True
+            )
+        
+        elif command == "Report Issue":
+            view = discord.ui.View()
+            view.add_item(PetSelect(placeholder="Select a pet..."))
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['report']} Report Issue",
+                    "Select a pet to report:"
+                ),
+                view=view,
+                ephemeral=True
+            )
+        
+        elif command == "Settings":
+            await settings_command(interaction)
+        
+        elif command == "Admin Tools":
+            if not is_admin(interaction):
+                await interaction.response.send_message(
+                    embed=get_embed(
+                        f"{EMOJIS['error']} Permission Denied",
+                        "You need admin permissions to access this."
+                    ),
+                    ephemeral=True
+                )
+                return
+            
+            view = discord.ui.View()
+            view.add_item(discord.ui.Select(
+                placeholder="Select admin command...",
+                options=[
+                    discord.SelectOption(label="Setup Channels", emoji=EMOJIS["settings"], value="setup"),
+                    discord.SelectOption(label="Refresh Data", emoji=EMOJIS["refresh"], value="refresh"),
+                    discord.SelectOption(label="Customize Bot", emoji=EMOJIS["settings"], value="customize")
+                ]
+            ))
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['admin']} Admin Tools",
+                    "Select an admin command:"
+                ),
+                view=view,
+                ephemeral=True
+            )
 
-# Modals for control panel
-class TopModal(discord.ui.Modal, title="Top Pets"):
-    stat = discord.ui.TextInput(
-        label="Stat to sort by",
-        placeholder="Bubbles, Coins, Gems, or Tickets"
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await top_command(interaction, self.stat.value)
-
-class SearchModal(discord.ui.Modal, title="Search Pets"):
-    attribute = discord.ui.TextInput(
-        label="Attribute to search by",
-        placeholder="rarity, stats, tag, or limited"
-    )
-    query = discord.ui.TextInput(
-        label="Value to search for"
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await search_command(interaction, self.attribute.value, self.query.value)
-
-class ViewModal(discord.ui.Modal, title="View Pet"):
-    pet_name = discord.ui.TextInput(
-        label="Pet Name"
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await view_command(interaction, self.pet_name.value)
-
-class ReportModal(discord.ui.Modal, title="Report Issue"):
-    pet_name = discord.ui.TextInput(
-        label="Pet Name"
-    )
-    issue = discord.ui.TextInput(
-        label="Description of the issue",
-        style=discord.TextStyle.long
-    )
-    
-    async def on_submit(self, interaction: discord.Interaction):
-        await report_command(interaction, self.pet_name.value, self.issue.value)
-
-# Command functions (now called by modals)
-async def top_command(interaction: discord.Interaction, stat: str):
-    stat = stat.capitalize()
-    if stat not in ["Bubbles", "Coins", "Gems", "Tickets"]:
-        await interaction.response.send_message("Invalid stat. Use Bubbles, Coins, Gems, or Tickets.", ephemeral=True)
+# Command functions
+async def top_command(interaction: discord.Interaction, stat: str, user_id: int):
+    channel_id = get_channel_id("top")
+    if not channel_id:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Configuration Error",
+                "Top channel not set up. Please contact an admin."
+            ),
+            ephemeral=True
+        )
         return
     
-    valid_pets = [pet for pet in pet_data.values() if stat in pet["stats"]]
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Channel Not Found",
+                "Top channel not found. Please contact an admin."
+            ),
+            ephemeral=True
+        )
+        return
+    
+    # Apply user blacklist
+    user_config = user_settings.get(str(user_id), {})
+    blacklisted_rarities = user_config.get("blacklist_rarities", [])
+    blacklisted_pets = user_config.get("blacklist_pets", [])
+    
+    # Filter pets
+    valid_pets = [
+        pet for pet in pet_data.values() 
+        if stat in pet["stats"] and 
+        pet["rarity"] not in blacklisted_rarities and
+        pet["name"] not in blacklisted_pets
+    ]
     
     if not valid_pets:
-        await interaction.response.send_message(f"No pets found with {stat} stat.", ephemeral=True)
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} No Pets Found",
+                f"No pets found with {stat} stat after applying your blacklist."
+            ),
+            ephemeral=True
+        )
         return
     
+    # Sort by stat
     sorted_pets = sorted(valid_pets, key=lambda x: x["stats"][stat], reverse=True)
     
+    # Create pages
     pages = []
     for i in range(0, len(sorted_pets), 10):
         page_pets = sorted_pets[i:i+10]
@@ -285,49 +491,110 @@ async def top_command(interaction: discord.Interaction, stat: str):
             f"**{idx + i + 1}.** {pet['name']} - {pet['stats'][stat]:,} {stat} ({pet['rarity']})"
             for idx, pet in enumerate(page_pets)
         )
-        pages.append(get_embed(f"Top Pets by {stat}", description, user_id=interaction.user.id))
+        pages.append(get_embed(f"{EMOJIS['top']} Top Pets by {stat}", description))
     
     if not pages:
-        await interaction.response.send_message("No pets found.", ephemeral=True)
+        await interaction.followup.send(
+            embed=get_embed(f"{EMOJIS['error']} Error", "No pets found."),
+            ephemeral=True
+        )
         return
     
-    await interaction.response.send_message(embed=pages[0], view=PaginatorView(pages))
+    # Send to channel
+    await channel.send(embed=pages[0], view=PaginatorView(pages))
+    await interaction.followup.send(
+        embed=get_embed(
+            f"{EMOJIS['success']} Results Sent",
+            f"Top pets by {stat} have been sent to {channel.mention}"
+        ),
+        ephemeral=True
+    )
 
-async def search_command(interaction: discord.Interaction, attribute: str, query: str):
-    results = []
+async def fuzzy_command(interaction: discord.Interaction, pets: List[str], user_id: int):
+    channel_id = get_channel_id("fuzzy")
+    if not channel_id:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Configuration Error",
+                "Fuzzy search channel not set up. Please contact an admin."
+            ),
+            ephemeral=True
+        )
+        return
     
-    for pet in pet_data.values():
-        if attribute == "rarity":
-            if query.lower() == pet["rarity"].lower():
-                results.append(pet)
-        elif attribute == "stats":
-            if query in pet["stats"]:
-                results.append(pet)
-        elif attribute == "tag":
-            if any(query.lower() == tag.lower() for tag in pet.get("tags", [])):
-                results.append(pet)
-        elif attribute == "limited":
-            if pet["limited"]:
-                results.append(pet)
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Channel Not Found",
+                "Fuzzy search channel not found. Please contact an admin."
+            ),
+            ephemeral=True
+        )
+        return
+    
+    # Get pet details
+    results = [pet_data[pet_name] for pet_name in pets if pet_name in pet_data]
     
     if not results:
-        await interaction.response.send_message("No pets matched your search.", ephemeral=True)
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} No Pets Found",
+                "No pets matched your search."
+            ),
+            ephemeral=True
+        )
         return
     
-    pages = []
-    for i in range(0, len(results), 10):
-        page_pets = results[i:i+10]
-        description = "\n".join(
-            f"**{pet['name']}** ({pet['rarity']})" + 
-            (f" - Tags: {', '.join(pet['tags'])}" if pet.get('tags') else "") +
-            (f" - Limited" if pet['limited'] else "")
-            for pet in page_pets
+    # Create embeds
+    embeds = []
+    for pet in results:
+        embed = get_embed(
+            f"{EMOJIS['pet']} {pet['name']}",
+            f"**Rarity:** {pet['rarity']}\n"
+            f"**Tags:** {', '.join(pet.get('tags', []))}\n"
+            f"**Limited:** {'Yes' if pet['limited'] else 'No'}\n\n"
+            "**Stats:**\n" + "\n".join(f"{k}: {v}" for k, v in pet["stats"].items())
         )
-        pages.append(get_embed(f"Pets with {attribute} matching '{query}'", description, user_id=interaction.user.id))
+        if pet.get("images"):
+            embed.set_thumbnail(url=f"https://ps99.biggamesapi.io/image/{pet['images'][0].replace('rbxassetid://', '')}")
+        embeds.append(embed)
     
-    await interaction.response.send_message(embed=pages[0], view=PaginatorView(pages))
+    # Send to channel
+    for embed in embeds:
+        await channel.send(embed=embed)
+    
+    await interaction.followup.send(
+        embed=get_embed(
+            f"{EMOJIS['success']} Results Sent",
+            f"Fuzzy search results have been sent to {channel.mention}"
+        ),
+        ephemeral=True
+    )
 
-async def view_command(interaction: discord.Interaction, pet_name: str):
+async def view_command(interaction: discord.Interaction, pet_name: str, user_id: int):
+    channel_id = get_channel_id("view")
+    if not channel_id:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Configuration Error",
+                "View channel not set up. Please contact an admin."
+            ),
+            ephemeral=True
+        )
+        return
+    
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Channel Not Found",
+                "View channel not found. Please contact an admin."
+            ),
+            ephemeral=True
+        )
+        return
+    
     pet = pet_data.get(pet_name)
     if not pet:
         matches = fuzzy_search(pet_name, list(pet_data.keys()))
@@ -336,173 +603,372 @@ async def view_command(interaction: discord.Interaction, pet_name: str):
             pet_name = matches[0]
     
     if not pet:
-        await interaction.response.send_message(f"Pet '{pet_name}' not found.", ephemeral=True)
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Pet Not Found",
+                f"Pet '{pet_name}' not found."
+            ),
+            ephemeral=True
+        )
         return
     
     variants = get_pet_variants(pet_name)
     if not variants:
-        await interaction.response.send_message(f"No variants found for {pet_name}.", ephemeral=True)
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} No Variants",
+                f"No variants found for {pet_name}."
+            ),
+            ephemeral=True
+        )
         return
     
-    # Send each variant
+    # Send each variant to channel
     for variant_name, variant_data in variants.items():
         if variant_data["image"]:
             stats_desc = "\n".join(f"{stat}: {value:,}" for stat, value in variant_data["stats"].items())
             embed = get_embed(
-                f"{pet_name} ({pet['rarity']}) - {variant_name}",
-                f"**Stats:**\n{stats_desc}\n\n" +
+                f"{EMOJIS['view']} {pet_name} - {variant_name}",
+                f"**Rarity:** {pet['rarity']}\n"
+                f"**Type:** {variant_name}\n\n"
+                f"**Stats:**\n{stats_desc}\n\n"
                 (f"**Tags:** {', '.join(pet['tags'])}\n" if pet.get('tags') else "") +
-                ("**Limited**" if pet['limited'] else ""),
-                user_id=interaction.user.id
+                (f"**Limited:** {'Yes' if pet['limited'] else 'No'}")
             )
             embed.set_thumbnail(url=variant_data["image"])
-            
-            if variant_name == "Normal":
-                await interaction.response.send_message(embed=embed)
-            else:
-                await interaction.followup.send(embed=embed)
+            await channel.send(embed=embed)
+    
+    await interaction.followup.send(
+        embed=get_embed(
+            f"{EMOJIS['success']} Pet Viewed",
+            f"{pet_name} details have been sent to {channel.mention}"
+        ),
+        ephemeral=True
+    )
 
-async def report_command(interaction: discord.Interaction, pet_name: str, issue: str):
-    report_channel_id = config.get("report_channel")
-    if not report_channel_id:
-        await interaction.response.send_message("Report channel not set up. Ask an admin to run /setup.", ephemeral=True)
+async def report_command(interaction: discord.Interaction, pet_name: str, issue: str, user_id: int):
+    channel_id = get_channel_id("report")
+    if not channel_id:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Configuration Error",
+                "Report channel not set up. Please contact an admin."
+            ),
+            ephemeral=True
+        )
         return
     
-    report_channel = bot.get_channel(report_channel_id)
-    if not report_channel:
-        await interaction.response.send_message("Report channel not found. Ask an admin to reconfigure.", ephemeral=True)
+    channel = bot.get_channel(channel_id)
+    if not channel:
+        await interaction.followup.send(
+            embed=get_embed(
+                f"{EMOJIS['error']} Channel Not Found",
+                "Report channel not found. Please contact an admin."
+            ),
+            ephemeral=True
+        )
         return
     
     embed = get_embed(
-        "Data Issue Report",
+        f"{EMOJIS['report']} Data Issue Report",
         f"**Pet:** {pet_name}\n"
         f"**Reported by:** {interaction.user.mention}\n"
         f"**Issue:** {issue}\n\n"
-        "Please reply with a screenshot of the correct data.",
-        user_id=interaction.user.id
+        "Please provide a screenshot of the correct data."
     )
     
-    await report_channel.send(embed=embed)
-    await interaction.response.send_message("Your report has been sent to the moderators.", ephemeral=True)
+    await channel.send(embed=embed)
+    await interaction.followup.send(
+        embed=get_embed(
+            f"{EMOJIS['success']} Report Submitted",
+            "Your report has been sent to the moderators."
+        ),
+        ephemeral=True
+    )
 
-# Settings command
-@bot.tree.command(name="settings", description="Configure your display settings")
-@app_commands.describe(
-    blacklist="Attributes to hide (comma separated: title,description,footer)"
-)
-async def settings(interaction: discord.Interaction, blacklist: Optional[str] = None):
+async def settings_command(interaction: discord.Interaction):
     user_id = str(interaction.user.id)
     
     if user_id not in user_settings:
-        user_settings[user_id] = {"blacklist": []}
+        user_settings[user_id] = {
+            "blacklist": [],
+            "blacklist_rarities": [],
+            "blacklist_pets": []
+        }
     
-    if blacklist is not None:
-        blacklist_items = [item.strip() for item in blacklist.split(",")]
-        valid_items = ["title", "description", "footer"]
-        user_settings[user_id]["blacklist"] = [item for item in blacklist_items if item in valid_items]
-        save_user_settings(user_settings)
-        await interaction.response.send_message(
-            f"Your settings have been updated. Blacklisted: {', '.join(user_settings[user_id]['blacklist']) or 'None'}",
-            ephemeral=True
-        )
-    else:
-        current = ", ".join(user_settings[user_id].get("blacklist", [])) or "None"
-        await interaction.response.send_message(
-            f"Your current blacklist: {current}\n"
-            "Use `/settings blacklist:title,description,footer` to change",
-            ephemeral=True
-        )
+    # Create settings view
+    view = discord.ui.View()
+    
+    # Blacklist attributes
+    view.add_item(discord.ui.Select(
+        placeholder="Blacklist Attributes...",
+        min_values=0,
+        max_values=3,
+        options=[
+            discord.SelectOption(label="Title", value="title"),
+            discord.SelectOption(label="Description", value="description"),
+            discord.SelectOption(label="Footer", value="footer")
+        ],
+        custom_id="attr_blacklist"
+    ))
+    
+    # Blacklist rarities
+    rarity_select = RaritySelect(
+        placeholder="Blacklist Rarities...",
+        min_values=0,
+        max_values=len(get_unique_rarities()),
+        custom_id="rarity_blacklist"
+    )
+    view.add_item(rarity_select)
+    
+    # Blacklist pets
+    pet_select = PetSelect(
+        placeholder="Blacklist Pets...",
+        min_values=0,
+        max_values=len(get_sorted_pet_names()),
+        custom_id="pet_blacklist"
+    )
+    view.add_item(pet_select)
+    
+    await interaction.response.send_message(
+        embed=get_embed(
+            f"{EMOJIS['settings']} Your Settings",
+            "Configure what you want to hide in embeds:\n\n"
+            "1. **Blacklist Attributes:** Hide parts of embeds\n"
+            "2. **Blacklist Rarities:** Exclude from /top command\n"
+            "3. **Blacklist Pets:** Exclude from /top command"
+        ),
+        view=view,
+        ephemeral=True
+    )
 
 # Admin commands
-@bot.tree.command(name="setup", description="Set up the server (Admin only)")
-async def setup(interaction: discord.Interaction):
+async def setup_command(interaction: discord.Interaction):
     if not is_admin(interaction):
-        await interaction.response.send_message("You need admin permissions to run this command.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=get_embed(
+                f"{EMOJIS['error']} Permission Denied",
+                "You need admin permissions to run this command."
+            ),
+            ephemeral=True
+        )
         return
     
     guild = interaction.guild
+    
+    # Create category
     category = await guild.create_category("Pet Stats Bot")
     
-    # Create report channel
-    report_channel = await guild.create_text_channel(
-        "bot-reports",
-        category=category,
-        topic="Channel for reporting incorrect pet data"
-    )
+    # Create channels
+    channels = {}
+    for channel_type in ["top", "fuzzy", "search", "view", "report", "settings"]:
+        channel = await guild.create_text_channel(
+            f"bot-{channel_type}",
+            category=category,
+            topic=f"Channel for {channel_type} command outputs"
+        )
+        channels[channel_type] = channel.id
     
-    # Create control panel channel
-    control_panel = await guild.create_text_channel(
+    # Update config
+    config["channels"] = channels
+    save_config(config)
+    
+    # Send control panel
+    control_channel = await guild.create_text_channel(
         "bot-controls",
         category=category,
         topic="Control panel for pet stats bot"
     )
     
-    # Update config
-    config["report_channel"] = report_channel.id
-    config["control_panel_channel"] = control_panel.id
-    save_config(config)
-    
-    # Send control panel
     embed = get_embed(
-        "Pet Stats Control Panel",
-        "Use the buttons below to interact with the bot."
+        f"{EMOJIS['settings']} Pet Stats Control Panel",
+        "Use the dropdown below to interact with the bot."
     )
-    await control_panel.send(embed=embed, view=ControlPanelView())
+    await control_channel.send(embed=embed, view=CommandView())
     
     await interaction.response.send_message(
-        f"Setup complete. Reports will go to {report_channel.mention} and controls are in {control_panel.mention}",
+        embed=get_embed(
+            f"{EMOJIS['success']} Setup Complete",
+            f"All channels have been created in {category.mention}"
+        ),
         ephemeral=True
     )
 
-@bot.tree.command(name="refresh", description="Reload pet data (Admin only)")
-async def refresh(interaction: discord.Interaction):
+async def refresh_command(interaction: discord.Interaction):
     if not is_admin(interaction):
-        await interaction.response.send_message("You need admin permissions to run this command.", ephemeral=True)
+        await interaction.response.send_message(
+            embed=get_embed(
+                f"{EMOJIS['error']} Permission Denied",
+                "You need admin permissions to run this command."
+            ),
+            ephemeral=True
+        )
         return
     
     global pet_data
     pet_data = load_pet_data()
-    await interaction.response.send_message(f"Reloaded data for {len(pet_data)} pets.", ephemeral=True)
+    await interaction.response.send_message(
+        embed=get_embed(
+            f"{EMOJIS['refresh']} Data Refreshed",
+            f"Reloaded data for {len(pet_data)} pets."
+        ),
+        ephemeral=True
+    )
 
-@bot.tree.command(name="customize", description="Customize bot settings (Admin only)")
-@app_commands.describe(
-    embed_color="Hex color for embeds (e.g., #3498db)",
-    admin_role="Role to give bot admin permissions"
-)
-async def customize(
-    interaction: discord.Interaction,
-    embed_color: Optional[str] = None,
-    admin_role: Optional[discord.Role] = None
-):
-    if not is_admin(interaction):
-        await interaction.response.send_message("You need admin permissions to run this command.", ephemeral=True)
-        return
-    
-    changes = []
-    
-    if embed_color:
-        try:
-            if embed_color.startswith("#"):
-                embed_color = embed_color[1:]
-            color = int(embed_color, 16)
-            config["embed_color"] = color
-            changes.append(f"Embed color set to #{hex(color)[2:].zfill(6)}")
-        except ValueError:
-            await interaction.response.send_message("Invalid color format. Use hex like #3498db.", ephemeral=True)
+# Event handlers
+@bot.event
+async def on_ready():
+    print(f"Logged in as {bot.user.name} ({bot.user.id})")
+    try:
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands")
+        
+        # Add persistent views
+        bot.add_view(CommandView())
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
+
+@bot.event
+async def on_interaction(interaction: discord.Interaction):
+    # Handle select menu interactions
+    if interaction.data.get("component_type") == 3:  # Select menu
+        custom_id = interaction.data.get("custom_id")
+        values = interaction.data.get("values", [])
+        
+        if custom_id == "command_select":
+            # Already handled in CommandSelect
             return
+        
+        elif custom_id == "stat_select":
+            await top_command(interaction, values[0], interaction.user.id)
+        
+        elif custom_id == "pet_select":
+            if "fuzzy" in interaction.message.embeds[0].title:
+                await fuzzy_command(interaction, values, interaction.user.id)
+            elif "view" in interaction.message.embeds[0].title:
+                await view_command(interaction, values[0], interaction.user.id)
+            elif "report" in interaction.message.embeds[0].title:
+                # For report, we need to ask for issue description
+                await interaction.response.send_modal(ReportModal(values[0]))
+        
+        elif custom_id == "attr_blacklist":
+            user_id = str(interaction.user.id)
+            if user_id not in user_settings:
+                user_settings[user_id] = {"blacklist": []}
+            user_settings[user_id]["blacklist"] = values
+            save_user_settings(user_settings)
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['success']} Settings Updated",
+                    f"Blacklisted attributes: {', '.join(values) or 'None'}"
+                ),
+                ephemeral=True
+            )
+        
+        elif custom_id == "rarity_blacklist":
+            user_id = str(interaction.user.id)
+            if user_id not in user_settings:
+                user_settings[user_id] = {"blacklist_rarities": []}
+            user_settings[user_id]["blacklist_rarities"] = values
+            save_user_settings(user_settings)
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['success']} Settings Updated",
+                    f"Blacklisted rarities: {', '.join(values) or 'None'}"
+                ),
+                ephemeral=True
+            )
+        
+        elif custom_id == "pet_blacklist":
+            user_id = str(interaction.user.id)
+            if user_id not in user_settings:
+                user_settings[user_id] = {"blacklist_pets": []}
+            user_settings[user_id]["blacklist_pets"] = values
+            save_user_settings(user_settings)
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['success']} Settings Updated",
+                    f"Blacklisted pets: {', '.join(values) or 'None'}"
+                ),
+                ephemeral=True
+            )
+        
+        elif custom_id == "admin_select":
+            if values[0] == "setup":
+                await setup_command(interaction)
+            elif values[0] == "refresh":
+                await refresh_command(interaction)
+            elif values[0] == "customize":
+                await interaction.response.send_modal(CustomizeModal())
+
+# Modals
+class ReportModal(discord.ui.Modal, title="Report Issue"):
+    def __init__(self, pet_name):
+        super().__init__()
+        self.pet_name = pet_name
+        self.issue = discord.ui.TextInput(
+            label="Describe the issue",
+            style=discord.TextStyle.long,
+            placeholder="What's wrong with this pet's data?",
+            required=True
+        )
+        self.add_item(self.issue)
     
-    if admin_role:
-        if "admin_roles" not in config:
-            config["admin_roles"] = []
-        if admin_role.id not in config["admin_roles"]:
-            config["admin_roles"].append(admin_role.id)
-            changes.append(f"Added {admin_role.mention} as admin role")
+    async def on_submit(self, interaction: discord.Interaction):
+        await report_command(interaction, self.pet_name, self.issue.value, interaction.user.id)
+
+class CustomizeModal(discord.ui.Modal, title="Customize Bot"):
+    def __init__(self):
+        super().__init__()
+        self.embed_color = discord.ui.TextInput(
+            label="Embed Color (hex)",
+            placeholder="#3498db",
+            required=False
+        )
+        self.add_item(self.embed_color)
     
-    if changes:
-        save_config(config)
-        await interaction.response.send_message("\n".join(changes), ephemeral=True)
-    else:
-        await interaction.response.send_message("No settings were updated.", ephemeral=True)
+    async def on_submit(self, interaction: discord.Interaction):
+        if not is_admin(interaction):
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['error']} Permission Denied",
+                    "You need admin permissions to run this command."
+                ),
+                ephemeral=True
+            )
+            return
+        
+        if self.embed_color.value:
+            try:
+                color_str = self.embed_color.value.strip()
+                if color_str.startswith("#"):
+                    color_str = color_str[1:]
+                color = int(color_str, 16)
+                config["embed_color"] = color
+                save_config(config)
+                await interaction.response.send_message(
+                    embed=get_embed(
+                        f"{EMOJIS['success']} Settings Updated",
+                        f"Embed color set to #{hex(color)[2:].zfill(6)}"
+                    ),
+                    ephemeral=True
+                )
+            except ValueError:
+                await interaction.response.send_message(
+                    embed=get_embed(
+                        f"{EMOJIS['error']} Invalid Color",
+                        "Please use a valid hex color code (e.g., #3498db)"
+                    ),
+                    ephemeral=True
+                )
+        else:
+            await interaction.response.send_message(
+                embed=get_embed(
+                    f"{EMOJIS['info']} No Changes",
+                    "No settings were updated."
+                ),
+                ephemeral=True
+            )
 
 # Paginator View
 class PaginatorView(discord.ui.View):
@@ -547,19 +1013,6 @@ class PaginatorView(discord.ui.View):
         self.current_page = self.max_page
         self.update_buttons()
         await interaction.response.edit_message(embed=self.pages[self.current_page], view=self)
-
-# Bot events
-@bot.event
-async def on_ready():
-    print(f"Logged in as {bot.user.name} ({bot.user.id})")
-    try:
-        synced = await bot.tree.sync()
-        print(f"Synced {len(synced)} commands")
-        
-        # Add the control panel view to the bot
-        bot.add_view(ControlPanelView())
-    except Exception as e:
-        print(f"Error syncing commands: {e}")
 
 # Run bot
 if __name__ == "__main__":
